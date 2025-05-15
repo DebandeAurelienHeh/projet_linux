@@ -1,0 +1,105 @@
+	SERVICE chrony
+
+SERV-FILE
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+#Variables
+LOGFILE="/var/log/setup_ntp.log"
+CHRONY_CONF="/etc/chrony.conf"
+CHRONY_CONF_BAK="/etc/chrony.conf.backup"
+SUBNET="10.42.0.0/24"
+TIMEZONE="Europe/Brussels"
+
+exec &>>"$LOGFILE"
+echo "[$(date +'%F %T')] Début du setup NTP (Chrony)"
+
+echo "Installation de chrony si necessaire"
+yum install -y chrony
+
+echo "Configuration du fuseau horaire : $TIMEZONE"
+timedatectl set-timezone "$TIMEZONE"
+
+if [ -f "$CHRONY_CONF" ] && [ ! -f "$CHRONY_CONF_BAK" ]; then
+	echo "Sauvegarde de $CHRONY_CONF vers $CHRONY_CONF_BAK"
+	cp "$CHRONY_CONF" "$CHRONY_CONF_BAK"
+fi
+
+echo "Ecriture de la configuration NTP personnalisee dans $CHRONY_CONF"
+cat > "$CHRONY_CONF" <<END
+#NTP Servers
+server 0.be.pool.ntp.org iburst
+server 1.be.pool.ntp.org iburst
+server 2.be.pool.ntp.org iburst
+server 3.be.pool.ntp.org iburst
+
+#Restrictions
+deny all
+allow $SUBNET
+END
+
+echo "Activation de la synchronisation NTP via timedatectl"
+timedatectl set-ntp true
+
+echo "Redemarrage et activation du service chronyd"
+systemctl restart chronyd.service
+systemctl enable chronyd.service
+
+echo "[$(date +'%F %T')] Setup NTP termine avec succes"
+
+
+
+SERV-APP	(chronyApp_create.sh)
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+
+LOGFILE="/var/log/setup_ntp_client.log"
+CHRONY_CONF="/etc/chrony.conf"
+CHRONY_CONF_BAK="/etc/chrony.conf.backup"
+NTP_SERVER="10.42.0.54"  
+TIMEZONE="Europe/Brussels"
+
+
+exec &>>"$LOGFILE"
+echo "[$(date +'%F %T')] Debut du setup NTP (Client)"
+
+
+echo "Installation de chrony si necessaire"
+yum install -y chrony
+
+
+echo "Configuration du fuseau horaire : $TIMEZONE"
+timedatectl set-timezone "$TIMEZONE"
+
+
+if [ -f "$CHRONY_CONF" ] && [ ! -f "$CHRONY_CONF_BAK" ]; then
+	echo "Sauvegarde de $CHRONY_CONF vers $CHRONY_CONF_BAK"
+	cp "$CHRONY_CONF" "$CHRONY_CONF_BAK"
+fi
+
+
+echo "Configuration de $CHRONY_CONF pour pointer uniquement vers $NTP_SERVER"
+cat > "$CHRONY_CONF" <<END
+server $NTP_SERVER iburst
+driftfile /var/lib/chrony/drift
+makestep 1.0 3
+rtcsync
+logdir /var/log/chrony
+END
+
+echo "Activation de la synchronisation NTP"
+timedatectl set-ntp true
+systemctl restart chronyd.service
+systemctl enable chronyd.service
+
+echo "[$(date +'%F %T')] Setup NTP client termine avec succes"
+
+
+
+
+POUR TESTER : 
+chronyc sources -v (sur serv-APP)
+timedatectl status

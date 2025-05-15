@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+{
+  echo "===== serveur_app ====="
+
+  echo "===== setup_ftp.log ====="
+  cat /var/log/setup_ftp.log
+  echo
+
+  echo "===== setup_ntp_client.log ====="
+  cat /var/log/setup_ntp_client.log
+  echo
+
+  echo "===== setup_apache.log ====="
+  cat /var/log/setup_apache.log
+  echo 
+
+  echo "===== setup_mariaDB.log ====="
+  cat /var/log/setup_mysql.log
+  echo 
+
+  echo "===== setup_nfs_srv_app.log ====="
+  cat /var/log/setup_nfs_srv_app.log
+  echo 
+
+  echo "===== addclient.log ====="
+  cat /var/log/addclient.log
+  echo 
+
+  echo "===== fail2Ban ====="
+  cat /var/log/fail2ban.log
+  echo
+
+
+} > /logs/journalDeBord

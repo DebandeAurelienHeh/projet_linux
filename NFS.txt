@@ -1,0 +1,102 @@
+ATTENTION RAJOUTER DEDANS POUR DONNER L'executable au fichier		
+
+
+SUR SERV-APP 
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+EXPORT_DIR="/share/nfs"
+CLIENT_NET="10.42.0.0/24"
+LOGFILE="/var/log/setup_nfs.log"
+LINE="${EXPORT_DIR} ${CLIENT_NET}(rw,sync,no_root_squash,no_subtree_check)"
+
+systemctl enable --now rpcbind nfs-server
+
+exec &>>"$LOGFILE"
+echo "[$(date)] Début du setup NFS"
+
+
+grep -Fxq "$LINE" /etc/exports || {
+          echo "Ajout de la ligne suivante dans /etc/exports :"
+          echo "  $LINE"
+          echo "$LINE" | sudo tee -a /etc/exports
+}
+# Installation du package
+echo "Installation de nfs-utils"
+yum install -y nfs-utils
+
+# Creation du repertoire
+sudo mkdir -p "$EXPORT_DIR"
+sudo chmod 755 "$EXPORT_DIR"
+echo "Répertoire $EXPORT_DIR pret a etre partage"
+
+
+if command -v setsebool &>/dev/null; then
+          echo "Activation des booleans SELinux pour NFS"
+          setsebool -P nfs_export_all_rw on
+fi
+
+
+EXPORTS_LINE="${EXPORT_DIR} ${CLIENT_NET}(rw,sync,no_root_squash,no_subtree_check)"
+grep -Fxq "$EXPORTS_LINE" /etc/exports || {
+        echo "Ajout dans /etc/exports :"
+        echo "$EXPORTS_LINE"
+        echo "EXPORTS_LINE" >> /etc/exports
+}
+
+
+#if systemctl is-active firewalld &>/dev/null; then
+#echo "Ouverture du port NFS dans firewalld"
+#firewall-cmd --permanent --add-service=nfs
+#firewall-cmd --reload
+#fi
+
+#echo "Activation et demarrage de nfs server"
+#systemctl enable --now nfs-server
+
+echo "Export des partages NFS"
+exportfs -ra
+
+echo "[$(date)] Setup NFS termine avec succes"
+                                                        
+##########################################################################
+		SUR SERV APP 
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOG=/var/log/setup_nfs_srv_app.log
+exec &>>"$LOG"
+
+systemctl enable --now rpcbind
+
+echo "Montage de ${SERVER_IP}:${EXPORT_DIR} sur $MNT_POINT"
+if mount | grep -q "$MNT_POINT"; then
+  echo "→ $MNT_POINT est déjà monté, démontage préalable"
+  umount "$MNT_POINT"
+fi
+mount -t nfs "${SERVER_IP}:${EXPORT_DIR}" "$MNT_POINT"
+
+echo "[$(date)] Demarrage de la configuration NFS sur srv-app"
+
+sudo mkdir -p /mnt/share-test
+systemctl enable --now rpcbind nfs-server	
+mount -t nfs 10.42.0.144:/share/nfs /mnt/share-test
+
+echo "Test lecture/écriture"
+echo "NFS OK" | tee "${MNT_POINT}/test_from_app.txt" >/dev/null
+ls -l "$MNT_POINT"
+
+
+echo "[$(date)] Configuration NFS terminee sur srv-app"
+
+
+#################################
+TEST
+
+# Créer un fichier depuis srv-app
+echo "NFS OK YES" | sudo tee /mnt/nfs-test/test_from_app.txt
+
+# Lister pour vérifier
+ls -l /mnt/nfs-test

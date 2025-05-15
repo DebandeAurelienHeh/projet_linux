@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Monitoring Simple</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+        rel="stylesheet">
+  <meta http-equiv="refresh" content="15">
+</head>
+<body class="bg-light">
+  <div class="container py-4">
+    <h1 class="mb-4">📊 Monitoring des serveurs</h1>
+    <p class="text-muted">Mis à jour : {{ last }}</p>
+
+    <!-- 1. Système -->
+    <h2>Métriques Système</h2>
+    <div class="row">
+      <div class="col-md-4">
+        <h5>Load average</h5>
+        <p>{{ sysm.load[0] }} / {{ sysm.load[1] }} / {{ sysm.load[2] }}</p>
+      </div>
+      <div class="col-md-4">
+        <h5>CPU par cœur</h5>
+        <ul class="list-unstyled">
+        {% for p in sysm.cpu_perc %}
+          <li>CPU{{ loop.index0 }}: {{ p }}%</li>
+        {% endfor %}
+        </ul>
+      </div>
+      <div class="col-md-4">
+        <h5>Uptime</h5>
+        <p>{{ (sysm.uptime//3600)|int }}h {{ ((sysm.uptime%3600)//60)|int }}m</p>
+      </div>
+    </div>
+
+    <h5>Mémoire</h5>
+    <p>{{ (sysm.memory.used/1024**3)|round(2) }} GiB / {{ (sysm.memory.total/1024**3)|round(2) }} GiB ({{ sysm.memory.percent }}%)</p>
+    <h5>Swap</h5>
+    <p>{{ (sysm.swap.used/1024**3)|round(2) }} GiB / {{ (sysm.swap.total/1024**3)|round(2) }} GiB ({{ sysm.swap.percent }}%)</p>
+
+    <h5>Disques</h5>
+    <table class="table table-bordered table-sm mb-4">
+      <thead class="table-secondary">
+        <tr><th>Montage</th><th>Utilisé</th><th>Total</th><th>%</th></tr>
+      </thead>
+      <tbody>
+      {% for d in sysm.disks %}
+        <tr>
+          <td>{{ d.mount }}</td>
+          <td>{{ (d.used/1024**3)|round(2) }} GiB</td>
+          <td>{{ (d.total/1024**3)|round(2) }} GiB</td>
+          <td>{{ d.percent }}%</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    <!-- 2. Hôtes -->
+    <h2>État des hôtes</h2>
+    <table class="table table-bordered table-sm">
+      <thead class="table-secondary">
+        <tr><th>Nom</th><th>Statut</th><th>Ping (s)</th></tr>
+      </thead>
+      <tbody>
+      {% for name, info in hosts.items() %}
+        <tr class="{{ 'table-success' if info.status=='OK' else 'table-danger' }}">
+          <td>{{ name }}</td>
+          <td>{{ info.status }}</td>
+          <td>{{ info.delay|default('-')|round(3) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    <!-- 3. Services -->
+    <h2 class="mt-4">Services locaux (serv-app)</h2>
+    <table class="table table-bordered table-sm">
+      <thead class="table-secondary"><tr><th>Service</th><th>Statut</th></tr></thead>
+      <tbody>
+      {% for svc, st in services.items() %}
+        <tr class="{{ 'table-success' if st=='active' else 'table-danger' }}">
+          <td>{{ svc }}</td>
+          <td>{{ st }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+  </div>
+</body>
+</html>

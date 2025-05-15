@@ -1,0 +1,186 @@
+#!/bin/bash
+set -euo pipefail
+IFS=$'\n\t'
+
+# Vérifier qu'on est root (nécessaire pour les opérations système)
+if [[ $EUID -ne 0 ]]; then
+  gum style --foreground 196 "Erreur : ce script doit être exécuté en tant que root."
+  exit 1
+fi
+
+# Vérifier la présence de gum, named-checkzone et rndc (BIND)
+if ! command -v gum &> /dev/null; then
+  echo "L'outil 'gum' n'est pas installé. Installez-le (ex: 'brew install gum')." >&2
+  exit 1
+fi
+if ! command -v named-checkzone &> /dev/null; then
+  echo "named-checkzone introuvable. Installez bind-utils (ou bind9-utils)." >&2
+  exit 1
+fi
+if ! command -v rndc &> /dev/null && ! command -v named &> /dev/null; then
+  echo "Ni 'rndc' ni 'named' trouvés. Assurez-vous que BIND (named) est installé." >&2
+  exit 1
+fi
+
+# Demander le nom de domaine principal
+DOMAIN=$(gum input --placeholder "exemple.com" --prompt "Nom de domaine principal :")
+DOMAIN=${DOMAIN%.}  # supprimer un éventuel point final
+if [[ -z "$DOMAIN" ]]; then
+  gum style --foreground 196 "Erreur : le domaine est vide."
+  exit 1
+fi
+# Validation basique du format de domaine
+if [[ ! "$DOMAIN" =~ ^[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?(\.[A-Za-z]{2,})+$ ]]; then
+  gum style --foreground 196 "Erreur : nom de domaine invalide : $DOMAIN"
+  exit 1
+fi
+
+# Demander le nom d'utilisateur Linux à créer
+USERNAME=$(gum input --placeholder "user" --prompt "Nom d'utilisateur Linux :")
+if [[ -z "$USERNAME" ]]; then
+  gum style --foreground 196 "Erreur : nom d'utilisateur vide."
+  exit 1
+fi
+# Vérifier que l'utilisateur n'existe pas déjà
+if id "$USERNAME" &> /dev/null; then
+  gum style --foreground 220 --border double "L'utilisateur '$USERNAME' existe déjà."
+  exit 1
+fi
+
+# Créer l'utilisateur Linux avec dossier home et shell bash
+gum spin --title "Création de l'utilisateur '$USERNAME'..." --status disabled -- bash -c '
+useradd -m -s /bin/bash "'"$USERNAME"'" || exit 1
+'
+gum style --foreground 34 "Utilisateur '$USERNAME' créé."
+
+# Définir un mot de passe pour l'utilisateur (invite interactive)
+gum style "Veuillez définir le mot de passe pour '$USERNAME' :"
+passwd "$USERNAME" || { gum style --foreground 196 "Erreur : échec du passwd."; exit 1; }
+
+# (Éventuel ajout aux groupes Samba/FTP selon la config) 
+# example : usermod -aG ftpusers,smbusers "$USERNAME"
+
+# Configurer le répertoire web et le VirtualHost Apache
+WEBROOT="/var/www/${USERNAME}.${DOMAIN}"
+gum spin --title "Configuration du répertoire web et Apache..." -- bash -c '
+mkdir -p "'"$WEBROOT"'" \
+&& chown -R "'"$USERNAME"':'"$USERNAME"'" "'"$WEBROOT"'" \
+&& cat > /etc/httpd/conf.d/'"$USERNAME.${DOMAIN}"'.conf <<EOF
+<VirtualHost *:80>
+    ServerName '"${USERNAME}.${DOMAIN}"'
+    DocumentRoot '"$WEBROOT"'
+    ErrorLog /var/log/httpd/'"${USERNAME}.${DOMAIN}"'_error.log
+    CustomLog /var/log/httpd/'"${USERNAME}.${DOMAIN}"'_access.log combined
+</VirtualHost>
+EOF
+'
+gum style --foreground 34 "VirtualHost Apache créé pour ${USERNAME}.${DOMAIN}."
+# Page index par défaut
+cat > "${WEBROOT}/index.php" <<EOF
+<?php
+echo 'Bienvenue sur le site de $USERNAME pour le domaine $DOMAIN.';
+?>
+EOF
+systemctl reload httpd || { gum style --foreground 196 "Erreur : échec du rechargement d'Apache."; exit 1; }
+
+# ----- Création de la base de données MariaDB -----
+DB_NAME="${USERNAME}_db"
+DB_USER="${USERNAME}_dbuser"
+DB_PASS=$(openssl rand -hex 8)
+gum spin --title "Création de la base MariaDB '${DB_NAME}'..." --status disabled -- bash -c '
+mysql -u root -e "CREATE DATABASE IF NOT EXISTS \\\`'"$DB_NAME"'\\\`;" \
+&& mysql -u root -e "CREATE USER IF NOT EXISTS '\'''"$DB_USER"'@'\''localhost'\'' IDENTIFIED BY '\'''"$DB_PASS"''\''; GRANT ALL PRIVILEGES ON \\\`'"$DB_NAME"'\\\`.* TO '\''"'"$DB_USER"'"'\'"@'\''localhost'\''; FLUSH PRIVILEGES;"' || exit 1
+'
+if [[ $? -ne 0 ]]; then
+  gum style --foreground 196 "Erreur : échec de la création de la base de données."
+  exit 1
+fi
+gum style --foreground 34 "Base de données '${DB_NAME}' créée (utilisateur ${DB_USER})."
+
+# ----- Génération du certificat SSL auto-signé -----
+SSL_DIR="/etc/ssl/${USERNAME}.${DOMAIN}"
+mkdir -p "$SSL_DIR"
+gum spin --title "Génération du certificat SSL auto-signé..." --status disabled -- bash -c '
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout "'"$SSL_DIR/${USERNAME}.${DOMAIN}.key"'" \
+    -out "'"$SSL_DIR/${USERNAME}.${DOMAIN}.crt"'" \
+    -subj "/C=FR/ST=State/L=City/O=Organization/CN='"${USERNAME}.${DOMAIN}"'""
+chmod 600 "'"$SSL_DIR/${USERNAME}.${DOMAIN}.key"'" "'"$SSL_DIR/${USERNAME}.${DOMAIN}.crt"'"
+'
+if [[ $? -ne 0 ]]; then
+  gum style --foreground 196 "Erreur : création du certificat SSL échouée."
+  exit 1
+fi
+gum style --foreground 34 "Certificat SSL généré : ${SSL_DIR}/${USERNAME}.${DOMAIN}.crt"
+
+# ----- Gestion de la zone DNS (/var/named) -----
+ZONE_FILE="/var/named/${DOMAIN}.zone"
+IP=$(hostname -I | awk '{print $1}')  # IP principale de la machine
+if [[ -z "$IP" ]]; then
+  gum style --foreground 196 "Erreur : impossible de déterminer l'IP du serveur."
+  exit 1
+fi
+
+if [[ ! -f "$ZONE_FILE" ]]; then
+  # Zone absente : créer une zone minimale
+  gum style "Fichier de zone introuvable, création de $ZONE_FILE..."
+  cat > "$ZONE_FILE" <<EOF
+\$TTL 86400
+@   IN SOA  ns1.${DOMAIN}. admin.${DOMAIN}. (
+    $(date +%Y%m%d)01 ; Serial (YYYYMMDDnn)
+    3600       ; Refresh
+    1800       ; Retry
+    604800     ; Expire
+    86400      ; Minimum
+)
+    IN NS  ns1.${DOMAIN}.
+ns1 IN A   ${IP}
+@   IN A   ${IP}
+${USERNAME} IN A   ${IP}
+EOF
+  chmod 0644 "$ZONE_FILE"
+  chown root:named "$ZONE_FILE"
+  # Vérifier la syntaxe de la zone (bonne pratique:contentReference[oaicite:2]{index=2})
+  if ! named-checkzone "$DOMAIN" "$ZONE_FILE" > /dev/null; then
+    gum style --foreground 196 "Erreur : syntaxe invalide dans $ZONE_FILE"
+    exit 1
+  fi
+  # Recharger la zone DNS
+  rndc reload "$DOMAIN" || systemctl reload named
+  gum style --foreground 76 "Zone DNS '$DOMAIN' créée et rechargée."
+else
+  # Zone existante : incrémenter le serial SOA et mettre à jour l'enregistrement A
+  gum style "Fichier de zone existant trouvé, mise à jour du serial et de l'enregistrement A..."
+  # Extraire l'ancien serial (chiffres après le '(' avant '; Serial')
+  OLD_SERIAL=$(grep -Po "(?<=\()[0-9]+(?=\s*; Serial)" "$ZONE_FILE" | head -n1)
+  if [[ -z "$OLD_SERIAL" ]]; then
+    gum style --foreground 196 "Impossible d'extraire le serial existant dans $ZONE_FILE"
+    exit 1
+  fi
+  # Calculer le nouveau serial (format YYYYMMDDnn) : incrémenter si même date, sinon '01'
+  TODAY=$(date +%Y%m%d)
+  if [[ "${OLD_SERIAL:0:8}" == "$TODAY" ]]; then
+    INCR=$((10#${OLD_SERIAL:8} + 1))
+    NEW_SERIAL=$TODAY$(printf "%02d" $INCR)
+  else
+    NEW_SERIAL=$TODAY"01"
+  fi
+  # Remplacer la première occurrence de l'ancien serial par le nouveau
+  sed -i "0,/$OLD_SERIAL/ s/$OLD_SERIAL/$NEW_SERIAL/" "$ZONE_FILE"
+  # Ajouter ou mettre à jour l'enregistrement A pour l'utilisateur
+  if grep -q "^${USERNAME}[[:space:]]*IN[[:space:]]*A" "$ZONE_FILE"; then
+    sed -i "s/^${USERNAME}[[:space:]]*IN[[:space:]]*A.*/${USERNAME} IN A ${IP}/" "$ZONE_FILE"
+  else
+    echo "${USERNAME} IN A ${IP}" >> "$ZONE_FILE"
+  fi
+  # Vérifier la syntaxe et recharger la zone
+  if ! named-checkzone "$DOMAIN" "$ZONE_FILE" > /dev/null; then
+    gum style --foreground 196 "Erreur : syntaxe invalide dans $ZONE_FILE après modification"
+    exit 1
+  fi
+  rndc reload "$DOMAIN" || systemctl reload named
+  gum style --foreground 76 "Zone DNS '$DOMAIN' mise à jour et rechargée."
+fi
+
+# Fin du script
+gum style --foreground 76 --border single --margin "1" "Configuration terminée pour l'utilisateur '$USERNAME'."

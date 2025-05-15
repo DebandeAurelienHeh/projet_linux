@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+{
+  echo "===== serveur_file ====="
+
+  echo "===== setup_samba.log ====="
+  cat /var/log/setup_samba.log
+  echo
+
+  echo "===== setup_ntp_client.log ====="
+  cat /var/log/setup_ntp.log
+  echo
+
+  echo "===== setup_nfs.log ====="
+  cat /var/log/setup_nfs.log
+  echo 
+
+  echo "===== fail2ban.log ====="
+  cat /var/log/fail2ban.log
+  echo 
+
+} > /logs/journalDeBord

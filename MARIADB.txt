@@ -1,0 +1,97 @@
+MARIADB - APP
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOGFILE="/var/log/setup_mysql.log"
+WEB_DIR="/web"                        
+MYSQL_DATA="${WEB_DIR}/mysql-data"
+MY_CNF="/etc/my.cnf.d/mysql-server.cnf"
+PHPMYADMIN_CONF="/etc/phpMyAdmin/config.inc.php"
+
+sudo mkdir -p /var/log/mysql
+sudo chown mysql:mysql /var/log/mysql
+sudo chmod 700 /var/log/mysql
+
+sudo mkdir -p /run/mysqld
+sudo chown mysql:mysql /run/mysqld
+sudo chmod 755 /run/mysqld
+
+sudo chown mysql:mysql /web/mysql-data/mysql.sock
+sudo chmod 660 /web/mysql-data/mysql.sock
+
+sudo systemctl restart mariadb
+
+
+exec &>>"$LOGFILE"
+echo "[$(date +'%F %T')] Début du setup MySQL (MariaDB)"
+
+
+echo "Arret de mysqld"
+systemctl stop mariadb.service
+
+
+echo "Creation de ${MYSQL_DATA}"
+mkdir -p "$MYSQL_DATA"
+chown -R mysql:mysql "$MYSQL_DATA"
+chmod 700 "$MYSQL_DATA"
+
+
+echo "Copie des donnees depuis /var/lib/mysql"
+cp -R -p /var/lib/mysql/* "$MYSQL_DATA"
+
+
+[ ! -f "${MY_CNF}.bak" ] && \
+cp "$MY_CNF" "${MY_CNF}.bak" || true
+
+
+echo "Ecriture de ${MY_CNF}"
+cat > "$MY_CNF" <<END
+[mysqld]
+datadir=${MYSQL_DATA}
+socket=${MYSQL_DATA}/mysql.sock
+log-error=/var/log/mysql/mysqld.log
+pid-file=/run/mysqld/mysqld.pid
+END
+
+chmod 750 /web/mysql-data
+usermod -aG mysql ec2-user
+
+if command -v semanage &>/dev/null; then
+	echo "Contexte SELinux pour mysql-data"
+	semanage fcontext -a -t mysqld_db_t "${MYSQL_DATA}(/.*)?"
+	semanage fcontext -a -t mysqld_var_run_t "${MYSQL_DATA}/mysql.sock"
+	restorecon -Rv "$MYSQL_DATA"
+fi
+
+
+echo "Creation du lien vers /var/lib/mysql/mysql.sock"
+ln -sf "$MYSQL_DATA/mysql.sock" /var/lib/mysql/mysql.sock
+
+
+if [ -f "$PHPMYADMIN_CONF" ]; then
+	echo "Modification de l’hote phpMyAdmin en 127.0.0.1"
+	sed -i "s/\['host'\] = 'localhost'/\['host'\] = '127.0.0.1'/g" "$PHPMYADMIN_CONF"
+	echo "\$cfg['Servers'][\$i]['AllowRoot'] = FALSE;" >> "$PHPMYADMIN_CONF"
+else
+	echo "phpMyAdmin non detecte, on skippe sa configuration"
+fi
+
+
+echo "Demarrage de mariadb"
+systemctl enable --now mariadb.service
+
+
+echo "Redemarrage httpd"
+systemctl restart httpd
+
+echo "[$(date +'%F %T')] Setup MySQL termine avec succes"
+
+#########################################################
+
+sudo mysql --socket=/var/lib/mysql/mysql.sock -e "
+CREATE USER IF NOT EXISTS 'testuser'@'localhost' IDENTIFIED BY 'TestPass123';
+GRANT SELECT, INSERT, UPDATE, DELETE ON *.* TO 'testuser'@'localhost';
+FLUSH PRIVILEGES;
+"
+mysql -u testuser -p --socket=/var/lib/mysql/mysql.sock -e "SHOW DATABASES;"

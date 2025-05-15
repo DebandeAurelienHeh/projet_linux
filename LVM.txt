@@ -1,0 +1,57 @@
+#!/bin/bash
+
+gum log --time rfc822 --structured --level info "Initialisation du partitionnement LVM avec arborescence /web et /share..."
+
+#Dependance LVM
+sudo dnf install -y lvm2
+
+#Disques a utiliser
+DISK1="/dev/xvdb"
+DISK2="/dev/xvdc"
+
+#Noms des VG et LV
+VG_NAME_PARTAGE="vg_partage"
+VG_NAME_FTP="vg_ftp"
+LV_NFS="lv_nfs"
+LV_SAMBA="lv_samba"
+LV_FTP="lv_ftp"
+
+#Tailles des volumes
+SIZE_NFS="950M"
+SIZE_SAMBA="950M"
+SIZE_FTP="1.9G"
+
+#Creation des volumes physiques
+sudo pvcreate "$DISK1"
+sudo pvcreate "$DISK2"
+
+#Creation des groupes de volumes
+sudo vgcreate "$VG_NAME_PARTAGE" "$DISK1"
+sudo vgcreate "$VG_NAME_FTP" "$DISK2"
+
+#Creation des volumes logiques
+sudo lvcreate -n "$LV_NFS" -L "$SIZE_NFS" "$VG_NAME_PARTAGE"
+sudo lvcreate -n "$LV_SAMBA" -L "$SIZE_SAMBA" "$VG_NAME_PARTAGE"
+sudo lvcreate -n "$LV_FTP" -L "$SIZE_FTP" "$VG_NAME_FTP"
+
+#Formatage en XFS
+sudo mkfs.xfs "/dev/${VG_NAME_PARTAGE}/${LV_NFS}"
+sudo mkfs.xfs "/dev/${VG_NAME_PARTAGE}/${LV_SAMBA}"
+sudo mkfs.xfs "/dev/${VG_NAME_FTP}/${LV_FTP}"
+
+#Creation de l’arborescence
+sudo mkdir -p /web
+sudo mkdir -p /share/nfs
+sudo mkdir -p /share/samba
+
+#Montage
+sudo mount "/dev/${VG_NAME_FTP}/${LV_FTP}" /web
+sudo mount "/dev/${VG_NAME_PARTAGE}/${LV_NFS}" /share/nfs
+sudo mount "/dev/${VG_NAME_PARTAGE}/${LV_SAMBA}" /share/samba
+
+#Configuration fstab
+echo "/dev/${VG_NAME_FTP}/${LV_FTP}       /web           xfs    defaults    0 2" | sudo tee -a /etc/fstab
+echo "/dev/${VG_NAME_PARTAGE}/${LV_NFS}   /share/nfs     xfs    defaults    0 2" | sudo tee -a /etc/fstab
+echo "/dev/${VG_NAME_PARTAGE}/${LV_SAMBA} /share/samba   xfs    defaults    0 2" | sudo tee -a /etc/fstab
+
+gum log --level success "Volumes montés : /web, /share/nfs, /share/samba — tout est prêt !"

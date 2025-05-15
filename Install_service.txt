@@ -1,0 +1,67 @@
+install_service :
+#!/bin/bash
+function is_root() {
+if [ "$(id -u)" -eq 0 ];
+then
+return
+else
+sudo -v
+fi
+}
+is_root
+
+#Remove unused packages
+gum log --time rfc822 --structured --level info "Removing unused packages..."
+sudo dnf remove -y cockpit cockpit-bridge cockpit-packagekit cockpit-podman cockpit-storaged cockpit-system cockpit-ws
+
+#Install the services
+gum log --time rfc822 --structured --level info "Installing services..."
+sudo dnf install chrony -y
+sudo dnf install samba samba-common samba-client nfs-utils vsftpd -y
+sudo dnf install bind
+sudo yum install -y httpd
+sudo dnf install httpd-tools php mod_ssl phpmyadmin -y
+sudo dnf install -y php-mysqlnd php-dom php-simplexml php-xml php-xmlreader php-curl php-exif php-ftp php-gd php-iconv php-json php-mbstring php-posix php-sockets php-tokenizer
+sudo dnf install -y mariadb105-server
+sudo dnf install fail2ban -y
+
+
+#Enable and start the services
+gum log --time rfc822 --structured --level info "Enabling and starting the services..."
+sudo systemctl enable --now chronyd.service
+sudo systemctl enable --now {smb,vsftpd,nfs-server}.service
+sudo systemctl enable --now {named,httpd,mariadb}.service
+sudo systemctl enable --now fail2ban.service
+
+#Firewall
+gum log --time rfc822 --structured --level info "Configuring the firewall..."
+sudo dnf install firewalld -y
+sudo systemctl enable --now firewalld
+sudo firewall-cmd --add-service=ntp --permanent
+sudo firewall-cmd --add-service={samba,ftp,rpc-bind,mountd,nfs} --permanent
+sudo firewall-cmd --add-service={http,https,dns,ssh} --permanent
+sudo firewall-cmd --remove-service=cockpit --permanent
+#sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.42.0.0/16" service name="ssh" accept'
+#sudo firewall-cmd --permanent --remove-service=ssh
+
+sudo firewall-cmd --reload
+
+#PHPMyAdmin & MariaDB Secure Setup (minimal)
+gum log --time rfc822 --structured --level info "Removing anonymous MariaDB users (no root password set)..."
+
+#Démarre MariaDB si ce n’est pas encore le cas
+sudo systemctl start mariadb.service
+
+echo "Attente du démarrage complet de MariaDB…"
+until [ -S /var/lib/mysql/mysql.sock ]; do
+sleep 2
+done
+
+#Supprimer uniquement les utilisateurs anonymes
+mysql -u root <<EOF
+DELETE FROM mysql.user WHERE User='';
+EOF
+
+printf "\n-----------------------------------\n"
+gum log --time rfc822 --structured --level info "Services installed successfully."
+exit 0

@@ -1,0 +1,122 @@
+APP USERADD version 2 
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---- Configuration ----
+LOGFILE="/var/log/addclient.log"
+# On utilise gum pour les logs structurés (RFC822)
+function log_info { gum log --time rfc822 --structured --level info "$1"; }
+function log_error { gum log --time rfc822 --structured --level error "$1"; }
+
+# Vérifier que le script est lancé en root
+if [ "$(id -u)" -ne 0 ]; then
+    log_error "Ce script doit être exécuté en root."
+    exit 1
+fi
+
+# Vérifier argument
+if [ $# -ne 1 ]; then
+    log_error "Usage: $0 <nom_client>"
+    exit 1
+fi
+user="$1"
+
+# Chemin du répertoire web
+WEB_BASE="/web"
+HOME_DIR="$WEB_BASE/$user"
+
+log_info "Création du client '$user'"
+
+# Vérifier absence préalable de l'utilisateur et du répertoire
+if id "$user" &>/dev/null; then
+    log_error "L'utilisateur '$user' existe déjà."
+    exit 1
+fi
+if [ -d "$HOME_DIR" ]; then
+    log_error "Le répertoire '$HOME_DIR' existe déjà."
+    exit 1
+fi
+
+# Créer le répertoire web pour le client
+log_info "Création du répertoire $HOME_DIR"
+mkdir -p "$HOME_DIR"
+# Copier les fichiers modèles de /etc/skel (ex: index.php)
+if [ -d /etc/skel ]; then
+    cp -a /etc/skel/. "$HOME_DIR"/
+fi
+
+cat > /web/index.html <<EOF
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Bienvenue sur le serveur</title>
+</head>
+<body>
+  <h1>Bienvenue, <span style="color:teal;">${user}</span> !</h1>
+  <p>Cette page est générée automatiquement.</p>
+</body>
+</html>
+EOF
+chown apache:apache /web/index.html
+chmod 644 /web/index.htm
+
+
+
+# Créer l'utilisateur système sans shell ni home automatique
+log_info "Ajout de l'utilisateur Unix '$user'"
+useradd -M -d "$HOME_DIR" -s /usr/sbin/nologin -c "Client $user" "$user"
+
+# Ajuster les droits du répertoire web
+chown -R "$user":"$user" "$HOME_DIR"
+chmod 755 "$HOME_DIR"
+
+# Ajouter /usr/sbin/nologin dans /etc/shells pour autoriser FTP (vsftpd)
+if ! grep -Fxq "/usr/sbin/nologin" /etc/shells; then
+    log_info "Ajout de /usr/sbin/nologin dans /etc/shells (vsftpd)"
+    echo "/usr/sbin/nologin" >> /etc/shells
+fi
+
+# Configuration Samba : partage du dossier /web/nom_client
+smb_conf="/etc/samba/smb.conf"
+# Vérifier si la section existe déjà
+if grep -q "^\[$user\]" "$smb_conf"; then
+    log_error "Partage Samba [$user] existe déjà dans smb.conf."
+else
+    log_info "Ajout du partage Samba [$user] -> $HOME_DIR"
+    cat >> "$smb_conf" <<EOF
+
+[$user]
+   path = $HOME_DIR
+   browseable = yes
+   read only = no
+   valid users = $user
+   create mask = 0644
+   directory mask = 0755
+EOF
+    # Recharger Samba
+    systemctl reload smb || systemctl restart smb
+fi
+
+# Création de la base MariaDB et de l'utilisateur associé
+log_info "Création de la base MariaDB '$user' et de l'utilisateur associé"
+# Générer un mot de passe MariaDB aléatoire
+if command -v openssl >/dev/null; then
+    dbpass=$(openssl rand -base64 16)
+else
+    dbpass=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
+fi
+log_info $dbpass
+mysql -u root <<EOF
+CREATE DATABASE IF NOT EXISTS \`$user\`;
+CREATE USER IF NOT EXISTS '$user'@'localhost' IDENTIFIED BY '$dbpass';
+GRANT ALL PRIVILEGES ON \`$user\`.* TO '$user'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+log_info "Base MySQL '$user' créée. (Utilisateur: $user, mot de passe défini en interne.)"
+
+# Afficher la commande DNS à exécuter sur srv-file
+FQDN="$user.Filou.lan"
+log_info "Pour ajouter l'entrée DNS, exécutez sur srv-file : /usr/local/bin/adddns.sh $FQDN"
+

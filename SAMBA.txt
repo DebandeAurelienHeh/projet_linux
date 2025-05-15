@@ -1,0 +1,87 @@
+ATTENTION PAS SECURISE et si déjà lancer, mettre tout SELinux en commentaire
+
+
+Service SAMBA
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Variables
+SHARE_DIR="/share/samba"
+PUBLIC_DIR="${SHARE_DIR}/public"
+HOSTNAME="$(hostname -s)"
+LOGFILE="/var/log/setup_samba.log"
+SMB_CONF="/etc/samba/smb.conf"
+SMB_CONF_BAK="/etc/samba/smb.conf.bak"
+
+# Logs
+exec &>>"$LOGFILE"
+echo "[$(date +'%F %T')] Début du setup Samba"
+
+# Samba installation
+echo "Installation de samba"
+yum install -y samba
+
+# Directory
+echo "Creation et permissions de ${PUBLIC_DIR}"
+mkdir -p "$PUBLIC_DIR"
+chmod -R 777 "$SHARE_DIR"
+chown -R nobody:nobody "$SHARE_DIR"
+
+# SELinux 
+if command -v setsebool &>/dev/null; then
+echo "Activation des booleans SELinux pour Samba"
+setsebool -P samba_export_all_ro off     
+setsebool -P samba_export_all_rw on
+echo "Attribution du contexte SELinux samba_share_t"
+semanage fcontext -a -t samba_share_t "${SHARE_DIR}(/.*)?"
+restorecon -Rv "$SHARE_DIR"
+fi
+
+# Save the old smb_conf 
+if [ -f "$SMB_CONF" ] && [ ! -f "$SMB_CONF_BAK" ]; then
+echo "Sauvegarde de $SMB_CONF vers $SMB_CONF_BAK"
+cp "$SMB_CONF" "$SMB_CONF_BAK"
+fi
+
+# Write the new configuration
+echo "Ecriture de $SMB_CONF"
+cat > "$SMB_CONF" <<END
+# Content 
+[global]
+workgroup = WORKGROUP
+server string = ${HOSTNAME} (Samba %v)
+netbios name = ${HOSTNAME}
+security = user
+map to guest = Bad User
+dns proxy = no
+
+[public]
+path = ${PUBLIC_DIR}
+browseable = yes
+writable = yes
+guest ok = yes
+read only = no
+force user = nobody
+force group = nobody
+END
+
+
+# Samba services activation
+echo "Activation et demarrage de smb et nmb"
+systemctl enable --now smb nmb
+
+SAMBA_USER="smbuser"
+SAMBA_PWD="smbpass"
+
+if ! id "$SAMBA_USER" &>/dev/null; then
+echo "Creation de l'utilisateur local $SAMBA_USER"
+useradd -M -s /sbin/nologin "$SAMBA_USER"
+fi
+
+echo -e "$SAMBA_PWD\n$SAMBA_PWD" | smbpasswd -s -a "$SAMBA_USER"
+smbpasswd -e "$SAMBA_USER"
+
+echo "[$(date +'%F %T')] Utilisateur Samba $SAMBA_USER ajouté avec succès"
+
+echo "[$(date +'%F %T')] Setup Samba terminé avec succes"

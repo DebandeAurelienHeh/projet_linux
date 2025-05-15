@@ -1,0 +1,69 @@
+SUR APP -> APACHE
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOGFILE="/var/log/setup_apache.log"
+WEB_DIR="/var/www/html"
+SKEL_INDEX="/etc/skel/index.php"
+PHPINFO_INDEX="${WEB_DIR}/index.php"
+
+exec &>>"$LOGFILE"
+echo "[$(date +'%F %T')] Début du setup Apache/PHP"
+
+
+echo "Installation de httpd et php"
+yum install -y httpd php php-mysqlnd
+
+
+echo "Activation des booleans SELinux pour Apache"
+setsebool -P httpd_can_network_connect on
+setsebool -P httpd_can_network_connect_db on
+
+
+if [ -f /etc/httpd/conf.d/phpMyAdmin.conf ] && [ ! -f /etc/httpd/conf.d/phpMyAdmin.conf.bak ]; then
+	echo "Sauvegarde de phpMyAdmin.conf"
+	cp /etc/httpd/conf.d/phpMyAdmin.conf /etc/httpd/conf.d/phpMyAdmin.conf.bak
+fi
+
+
+echo "Modification Require local → all granted dans phpMyAdmin.conf"
+if [ -f /etc/httpd/conf.d/phpMyAdmin.conf ]; then
+	echo "Ouverture de l’accès externe pour phpMyAdmin"
+	sed -i '0,/Require local/s//Require all granted/' /etc/httpd/conf.d/phpMyAdmin.conf
+else
+	echo "phpMyAdmin non installe"
+fi
+
+
+echo "Ajout de ServerName localhost dans httpd.conf"
+grep -q "^ServerName" /etc/httpd/conf/httpd.conf || \
+echo "ServerName 127.0.0.1" >> /etc/httpd/conf/httpd.conf
+
+
+if [ -f "./index.php" ]; then
+	echo "→ Copie du template index.php dans /etc/skel"
+	cp ./index.php /etc/skel/index.php
+else
+	echo "Aucun template index.php trouvé"
+fi
+
+echo "Creation de ${PHPINFO_INDEX}"
+cat > "$PHPINFO_INDEX" <<END
+<?php
+phpinfo();
+?>
+END
+
+chown apache:apache "$PHPINFO_INDEX"
+chmod 644 "$PHPINFO_INDEX"
+
+echo "Démarrage httpd"
+systemctl enable --now httpd
+
+echo "[$(date +'%F %T')] Setup Apache/PHP termine avec succes"
+
+
+
+TEST:
+http://10.42.0.54/index.php (normalement .49)

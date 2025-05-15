@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# === CONFIGURATION ===
+declare -A DIR_MAP=(
+  [www]="/var/www"
+  [mysql]="/var/lib/mysql"
+  [home]="/home"
+)
+
+REMOTE_USER="ec2-user"
+REMOTE_HOST="10.42.0.49"
+REMOTE_DIR="/backup/web"
+PEM_KEY_PATH="/key/labsuserYann.pem"
+
+DATE=$(date +"%Y-%m-%d_%H-%M-%S")
+DAY_OF_WEEK=$(date +%u)
+
+# === TYPE DE SAUVEGARDE ===
+if [ "$DAY_OF_WEEK" -eq 7 ]; then
+    BACKUP_TYPE="différentielle"
+    MODE="full"
+else
+    BACKUP_TYPE="incrémentielle"
+    MODE="incremental"
+fi
+
+echo "[*] Démarrage d'une sauvegarde $BACKUP_TYPE"
+
+# === BOUCLE SUR CHAQUE RÉPERTOIRE À SAUVEGARDER ===
+for name in "${!DIR_MAP[@]}"; do
+    SRC_DIR="${DIR_MAP[$name]}"
+    ARCHIVE_NAME="${name}_backup_${DATE}.tar.gz"
+    TEMP_ARCHIVE="/tmp/$ARCHIVE_NAME"
+    SNAPSHOT_FILE="/tmp/${name}.snar"
+
+    echo "[*] Traitement de $SRC_DIR"
+
+    # Réinitialise l'état si on est dimanche (sauvegarde différentielle)
+    if [ "$MODE" = "full" ]; then
+        rm -f "$SNAPSHOT_FILE"
+    fi
+
+    echo "    [+] Compression de $SRC_DIR -> $TEMP_ARCHIVE"
+    tar --listed-incremental="$SNAPSHOT_FILE" -czf "$TEMP_ARCHIVE" "$SRC_DIR"
+
+    echo "    [+] Transfert vers $REMOTE_HOST:/tmp/$ARCHIVE_NAME"
+    scp -i "$PEM_KEY_PATH" "$TEMP_ARCHIVE" "$REMOTE_USER@$REMOTE_HOST:/tmp/$ARCHIVE_NAME"
+
+    echo "    [+] Déplacement dans $REMOTE_DIR avec sudo"
+    ssh -i "$PEM_KEY_PATH" "$REMOTE_USER@$REMOTE_HOST" "sudo mv /tmp/$ARCHIVE_NAME $REMOTE_DIR/"
+
+    echo "    [+] Nettoyage local : $TEMP_ARCHIVE"
+    rm -f "$TEMP_ARCHIVE"
+done
+
+echo "[✓] Toutes les sauvegardes $BACKUP_TYPE ont été réalisées avec succès."
